@@ -31,7 +31,10 @@ class AutoSizeText extends StatefulWidget {
     this.overflowReplacement,
     this.textScaleFactor,
     this.maxLines,
+    this.minLetterSpacing,
     this.semanticsLabel,
+    this.textHeightBehavior,
+     this.placeholderDimensions = const [],
   })  : textSpan = null,
         super(key: key);
 
@@ -56,7 +59,10 @@ class AutoSizeText extends StatefulWidget {
     this.overflowReplacement,
     this.textScaleFactor,
     this.maxLines,
+    this.minLetterSpacing,
     this.semanticsLabel,
+    this.textHeightBehavior,
+     this.placeholderDimensions = const [],
   })  : data = null,
         super(key: key);
 
@@ -184,8 +190,7 @@ class AutoSizeText extends StatefulWidget {
   /// This property also affects [minFontSize], [maxFontSize] and [presetFontSizes].
   ///
   /// The value given to the constructor as textScaleFactor. If null, will
-  /// use the [MediaQueryData.textScaleFactor] obtained from the ambient
-  /// [MediaQuery], or 1.0 if there is no [MediaQuery] in scope.
+  /// use [TextScaler] obtained from the ambient
   final double? textScaleFactor;
 
   /// An optional maximum number of lines for the text to span, wrapping if necessary.
@@ -201,6 +206,17 @@ class AutoSizeText extends StatefulWidget {
   /// widget directly to entirely override the [DefaultTextStyle].
   final int? maxLines;
 
+  /// The minimum letter spacing constraint to be used when auto-sizing text.
+  ///
+  /// When specified, if the minimum font size is achieved and the text still
+  /// doesn't fit the available area, the letter spacing will be decreased until
+  /// the text fits or the [minLetterSpacing] value is achieved. It is decreased
+  /// by [stepGranularity] on each iteration.
+  final double? minLetterSpacing;
+
+  // The default letter spacing if none is specified.
+  static const double _defaultLetterSpacing = 0;
+
   /// An alternative semantics label for this text.
   ///
   /// If present, the semantics of this widget will contain this value instead
@@ -214,6 +230,22 @@ class AutoSizeText extends StatefulWidget {
   /// AutoSizeText(r'$$', semanticsLabel: 'Double dollars')
   /// ```
   final String? semanticsLabel;
+
+  /// Defines how to apply [TextStyle.height] over and under text.
+  ///
+  /// [TextHeightBehavior.applyHeightToFirstAscent] and
+  /// [TextHeightBehavior.applyHeightToLastDescent] represent whether the
+  /// [TextStyle.height] modifier will be applied to the corresponding metric. By
+  /// default both properties are true, and [TextStyle.height] is applied as
+  /// normal. When set to false, the font's default ascent will be used.
+  ///
+  /// [TextHeightBehavior.leadingDistribution] determines how the
+  /// leading is distributed over and under text. This
+  /// property applies before [TextHeightBehavior.applyHeightToFirstAscent] and
+  /// [TextHeightBehavior.applyHeightToLastDescent].
+  final TextHeightBehavior? textHeightBehavior;
+
+   final List<PlaceholderDimensions> placeholderDimensions;
 
   @override
   _AutoSizeTextState createState() => _AutoSizeTextState();
@@ -254,17 +286,20 @@ class _AutoSizeTextState extends State<AutoSizeText> {
 
       _validateProperties(style, maxLines);
 
-      final result = _calculateFontSize(size, style, maxLines);
+      final result =
+          _calculateFontSize(size, style, maxLines, widget.minLetterSpacing);
       final fontSize = result[0] as double;
       final textFits = result[1] as bool;
+      final letterSpacing = result[2] as double?;
 
       Widget text;
 
       if (widget.group != null) {
         widget.group!._updateFontSize(this, fontSize);
-        text = _buildText(widget.group!._fontSize, style, maxLines);
+        text =
+            _buildText(widget.group!._fontSize, letterSpacing, style, maxLines);
       } else {
-        text = _buildText(fontSize, style, maxLines);
+        text = _buildText(fontSize, letterSpacing, style, maxLines);
       }
 
       if (widget.overflowReplacement != null && !textFits) {
@@ -306,7 +341,11 @@ class _AutoSizeTextState extends State<AutoSizeText> {
   }
 
   List _calculateFontSize(
-      BoxConstraints size, TextStyle? style, int? maxLines) {
+    BoxConstraints size,
+    TextStyle? style,
+    int? maxLines,
+    double? minLetterSpacing,
+  ) {
     final span = TextSpan(
       style: widget.textSpan?.style ?? style,
       text: widget.textSpan?.text ?? widget.data,
@@ -314,9 +353,8 @@ class _AutoSizeTextState extends State<AutoSizeText> {
       recognizer: widget.textSpan?.recognizer,
     );
 
-    final userScale =
-        widget.textScaleFactor ?? MediaQuery.textScaleFactorOf(context);
-
+    final userScale = widget.textScaleFactor ?? 1.0;
+    double? letterSpacing = span.style!.letterSpacing;
     int left;
     int right;
 
@@ -326,7 +364,7 @@ class _AutoSizeTextState extends State<AutoSizeText> {
           style!.fontSize!.clamp(widget.minFontSize, widget.maxFontSize);
       final defaultScale = defaultFontSize * userScale / style.fontSize!;
       if (_checkTextFits(span, defaultScale, maxLines, size)) {
-        return <Object>[defaultFontSize * userScale, true];
+        return <Object?>[defaultFontSize * userScale, true, letterSpacing];
       }
 
       left = (widget.minFontSize / widget.stepGranularity).floor();
@@ -337,9 +375,9 @@ class _AutoSizeTextState extends State<AutoSizeText> {
     }
 
     var lastValueFits = false;
+    var scale = userScale;
     while (left <= right) {
       final mid = (left + (right - left) / 2).floor();
-      double scale;
       if (presetFontSizes == null) {
         scale = mid * userScale * widget.stepGranularity / style!.fontSize!;
       } else {
@@ -355,6 +393,20 @@ class _AutoSizeTextState extends State<AutoSizeText> {
 
     if (!lastValueFits) {
       right += 1;
+      if (minLetterSpacing != null) {
+        letterSpacing = letterSpacing ?? AutoSizeText._defaultLetterSpacing;
+        do {
+          letterSpacing =
+              max(minLetterSpacing, letterSpacing! - widget.stepGranularity);
+          final stepSpan = TextSpan(
+            style: span.style!.copyWith(letterSpacing: letterSpacing),
+            text: span.text,
+            children: span.children,
+            recognizer: span.recognizer,
+          );
+          lastValueFits = _checkTextFits(stepSpan, scale, maxLines, size);
+        } while (!lastValueFits && letterSpacing > minLetterSpacing);
+      }
     }
 
     double fontSize;
@@ -364,7 +416,7 @@ class _AutoSizeTextState extends State<AutoSizeText> {
       fontSize = presetFontSizes[right] * userScale;
     }
 
-    return <Object>[fontSize, lastValueFits];
+    return <Object?>[fontSize, lastValueFits, letterSpacing];
   }
 
   bool _checkTextFits(
@@ -379,16 +431,20 @@ class _AutoSizeTextState extends State<AutoSizeText> {
         ),
         textAlign: widget.textAlign ?? TextAlign.left,
         textDirection: widget.textDirection ?? TextDirection.ltr,
-        textScaleFactor: scale,
+        textScaler: TextScaler.linear(scale),
         maxLines: words.length,
         locale: widget.locale,
         strutStyle: widget.strutStyle,
-      );
+      )..setPlaceholderDimensions(widget.placeholderDimensions);
 
       wordWrapTextPainter.layout(maxWidth: constraints.maxWidth);
 
-      if (wordWrapTextPainter.didExceedMaxLines ||
-          wordWrapTextPainter.width > constraints.maxWidth) {
+      final exceeds = wordWrapTextPainter.didExceedMaxLines ||
+          wordWrapTextPainter.width > constraints.maxWidth;
+
+      wordWrapTextPainter.dispose();
+
+      if (exceeds) {
         return false;
       }
     }
@@ -397,7 +453,7 @@ class _AutoSizeTextState extends State<AutoSizeText> {
       text: text,
       textAlign: widget.textAlign ?? TextAlign.left,
       textDirection: widget.textDirection ?? TextDirection.ltr,
-      textScaleFactor: scale,
+      textScaler: TextScaler.linear(scale),
       maxLines: maxLines,
       locale: widget.locale,
       strutStyle: widget.strutStyle,
@@ -405,41 +461,48 @@ class _AutoSizeTextState extends State<AutoSizeText> {
 
     textPainter.layout(maxWidth: constraints.maxWidth);
 
-    return !(textPainter.didExceedMaxLines ||
+    final fits = !(textPainter.didExceedMaxLines ||
         textPainter.height > constraints.maxHeight ||
         textPainter.width > constraints.maxWidth);
+
+    textPainter.dispose();
+
+    return fits;
   }
 
-  Widget _buildText(double fontSize, TextStyle style, int? maxLines) {
+  Widget _buildText(
+      double fontSize, double? letterSpacing, TextStyle style, int? maxLines) {
     if (widget.data != null) {
       return Text(
         widget.data!,
         key: widget.textKey,
-        style: style.copyWith(fontSize: fontSize),
+        style: style.copyWith(fontSize: fontSize, letterSpacing: letterSpacing),
         strutStyle: widget.strutStyle,
         textAlign: widget.textAlign,
         textDirection: widget.textDirection,
         locale: widget.locale,
         softWrap: widget.softWrap,
         overflow: widget.overflow,
-        textScaleFactor: 1,
+        textScaler: TextScaler.noScaling,
         maxLines: maxLines,
         semanticsLabel: widget.semanticsLabel,
+        textHeightBehavior: widget.textHeightBehavior,
       );
     } else {
       return Text.rich(
         widget.textSpan!,
         key: widget.textKey,
-        style: style,
+        style: style.copyWith(letterSpacing: letterSpacing),
         strutStyle: widget.strutStyle,
         textAlign: widget.textAlign,
         textDirection: widget.textDirection,
         locale: widget.locale,
         softWrap: widget.softWrap,
         overflow: widget.overflow,
-        textScaleFactor: fontSize / style.fontSize!,
+        textScaler: TextScaler.linear(fontSize / style.fontSize!),
         maxLines: maxLines,
         semanticsLabel: widget.semanticsLabel,
+        textHeightBehavior: widget.textHeightBehavior,
       );
     }
   }

@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 double effectiveFontSize(Text text) =>
     (text.textScaleFactor ?? 1) * text.style!.fontSize!;
-
+double? effectiveLetterSpacing(Text text) => text.style!.letterSpacing;
 bool doesTextFit(
   Text text, [
   double maxWidth = double.infinity,
